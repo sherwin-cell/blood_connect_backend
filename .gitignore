@@ -1,0 +1,12 @@
+@"
+venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+serviceAccountKey.json
+firebase-adminsdk*.json
+*-firebase-adminsdk-*.json
+.vscode/
+.idea/
+"@ | Set-Content .gitignore
