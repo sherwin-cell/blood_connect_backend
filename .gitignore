@@ -1,12 +1,17 @@
-@"
+# Python
 venv/
+.venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# Secrets: never commit Firebase credentials or env files
 .env
 .env.*
 serviceAccountKey.json
 firebase-adminsdk*.json
 *-firebase-adminsdk-*.json
+
+# Editors
 .vscode/
 .idea/
-"@ | Set-Content .gitignore

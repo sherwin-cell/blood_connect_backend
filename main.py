@@ -1,6 +1,9 @@
 
 import os
 import json
+import logging
+from contextlib import asynccontextmanager
+
 import firebase_admin
 
 from firebase_admin import credentials, firestore, auth
@@ -10,6 +13,14 @@ from pydantic import BaseModel, Field
 
 # Import donor notification router
 from routers.donor_notifications import router as donor_notifications_router
+from notifications.config import Settings
+from notifications.worker import NotificationWorker
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+log = logging.getLogger("blood_connect")
 
 
 # ------------------------------------------------------------------------------
@@ -37,32 +48,58 @@ db = firestore.client() if cred else None
 
 
 # ------------------------------------------------------------------------------
-# 2. FastAPI Setup
+# 2. Notification worker (Firestore listeners -> notifications -> FCM)
+# ------------------------------------------------------------------------------
+
+notification_worker = None
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    global notification_worker
+
+    settings = Settings.from_env()
+    if settings.enabled and db is not None:
+        notification_worker = NotificationWorker(db, settings)
+        notification_worker.start()
+    elif settings.enabled:
+        log.warning("Firebase credentials missing; notification worker not started.")
+
+    yield
+
+    if notification_worker is not None:
+        notification_worker.stop()
+
+
+# ------------------------------------------------------------------------------
+# 3. FastAPI Setup
 # ------------------------------------------------------------------------------
 
 app = FastAPI(
+    lifespan=lifespan,
     title="Blood-Connect API",
     description=(
-        "Backend API for Blood-Connect identity verification "
-        "and donor application notifications."
+        "Backend API for Blood-Connect. Also runs the notification worker, "
+        "which turns Firestore events into in-app notifications and FCM pushes."
     ),
-    version="2.1.0"
+    version="2.2.0"
 )
 
 security = HTTPBearer()
 
 
 # ------------------------------------------------------------------------------
-# 3. Register API Routers
+# 4. Register API Routers
 # ------------------------------------------------------------------------------
 
-# Donor approval/rejection notification endpoint
+# Deprecated: the notification worker now sends donor approval/rejection
+# notifications automatically. Kept so older admin builds do not error.
 # POST /api/donors/notify-status
 app.include_router(donor_notifications_router)
 
 
 # ------------------------------------------------------------------------------
-# 4. Firebase Authentication Dependency
+# 5. Firebase Authentication Dependency
 # ------------------------------------------------------------------------------
 
 def verify_firebase_token(
@@ -86,7 +123,7 @@ def verify_firebase_token(
 
 
 # ------------------------------------------------------------------------------
-# 5. Identity Verification Request Schema
+# 6. Identity Verification Request Schema
 # ------------------------------------------------------------------------------
 
 class VerificationRequest(BaseModel):
@@ -102,14 +139,17 @@ class VerificationRequest(BaseModel):
 
 
 # ------------------------------------------------------------------------------
-# 6. Health Check Endpoints
+# 7. Health Check Endpoints
 # ------------------------------------------------------------------------------
 
 @app.get("/health", tags=["System"])
 def health_check():
     return {
         "status": "ok",
-        "service": "Blood-Connect API"
+        "service": "Blood-Connect API",
+        "notificationWorker": (
+            notification_worker.status() if notification_worker else "disabled"
+        ),
     }
 
 
@@ -122,7 +162,7 @@ def root():
 
 
 # ------------------------------------------------------------------------------
-# 7. Identity Verification Endpoint
+# 8. Identity Verification Endpoint
 # ------------------------------------------------------------------------------
 
 @app.post("/api/verify", tags=["Identity Verification"])

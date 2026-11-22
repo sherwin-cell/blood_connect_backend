@@ -164,11 +164,15 @@ def claim_notification_event(
 # Donor notification endpoint
 # ---------------------------------------------------------
 
-@router.post("/notify-status")
+@router.post("/notify-status", deprecated=True)
 def notify_donor_status(
     payload: DonorNotificationRequest,
     admin_uid: str = Depends(require_admin)
 ):
+    """Deprecated: the notification worker (notifications/worker.py) now
+    notifies applicants automatically when PRC approves or rejects them.
+    Calling this as well would send the applicant a second push.
+    """
     db = initialize_firebase()
 
     donor_ref = (
