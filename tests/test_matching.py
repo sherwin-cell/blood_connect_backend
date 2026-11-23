@@ -38,8 +38,9 @@ class BloodType(unittest.TestCase):
         self.assertFalse(blood_type_matches("O+", "O-"))
         self.assertFalse(blood_type_matches("A+", "O-"))
 
-    def test_any_type_matches_everyone(self):
-        self.assertTrue(blood_type_matches("Any Type", "AB-"))
+    def test_any_type_is_not_a_wildcard(self):
+        self.assertFalse(blood_type_matches("Any Type", "AB-"))
+        self.assertFalse(blood_type_matches("Any", "O+"))
 
     def test_missing_type_never_matches(self):
         self.assertFalse(blood_type_matches("", "O+"))

@@ -3,8 +3,8 @@
 Pure functions only, so the rules can be unit tested. Matching follows the
 mobile app's rules:
 
-- Blood type: exact match (BloodCompatibility in the app). A request for
-  "Any Type" matches every blood type.
+- Blood type: exact match (BloodCompatibility in the app). Requests must name
+  a specific type; legacy "Any Type" requests match no one.
 - Eligibility: approved donor, isDonor, PRC marked isAvailableForDonation,
   and today is on or after nextEligibleDonationDate (YYYY-MM-DD, PH time).
 - Location: the donor's profile (users/{uid}) must be in the requester's
@@ -21,7 +21,6 @@ from typing import Iterable, Optional
 
 from .constants import DonorStatus
 
-ANY_BLOOD_TYPE = {"ANY", "ANY TYPE", "ANY BLOOD TYPE"}
 _DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 
 
@@ -64,7 +63,7 @@ def blood_type_matches(request_type, donor_type) -> bool:
     donor = normalize_blood_type(donor_type)
     if not request or not donor:
         return False
-    return request in ANY_BLOOD_TYPE or request == donor
+    return request == donor
 
 
 def next_eligible_date(donor: dict) -> Optional[date]:
