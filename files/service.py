@@ -59,6 +59,10 @@ class PrivateStorage(Protocol):
     folder: str
     def upload(self, data: bytes, uid: str, kind: str, extension: str) -> SecureRef: ...
     def signed_url(self, ref: SecureRef, ttl_seconds: int) -> str: ...
+    def download(self, ref: SecureRef, max_bytes: int) -> bytes: ...
+
+
+MEDIA_TYPES = {"pdf": "application/pdf", "jpg": "image/jpeg", "png": "image/png"}
 
 
 @dataclass
@@ -108,18 +112,39 @@ class FileService:
             return Outcome(502, Code.STORAGE_FAILED, {"message": "Upload failed. Please try again."})
         return Outcome(200, Code.UPLOADED, {"ref": str(ref)})
 
-    def view(self, caller: dict, value: str) -> Outcome:
-        """Signed short-lived URL for the file's owner or a PRC admin."""
+    def _authorize(self, caller: dict, value: str) -> tuple[Optional[SecureRef], Optional[Outcome]]:
+        """The parsed ref when the caller owns the file or is a PRC admin."""
         ref = parse_ref(value, self.settings.folder)
         if ref is None:
-            return Outcome(400, Code.INVALID_REF, {"message": "Not a Blood-Connect file reference."})
+            return None, Outcome(400, Code.INVALID_REF, {"message": "Not a Blood-Connect file reference."})
         caller_uid = caller.get("uid")
         allowed = bool(caller_uid) and (
             caller_uid == ref.uid or caller.get("admin") is True or self._is_admin(caller_uid)
         )
         if not allowed:
-            return Outcome(403, Code.FORBIDDEN, {"message": "You cannot view this file."})
+            return None, Outcome(403, Code.FORBIDDEN, {"message": "You cannot view this file."})
         if self._storage is None:
-            return Outcome(503, Code.NOT_CONFIGURED, {"message": "Secure files are not configured."})
+            return None, Outcome(503, Code.NOT_CONFIGURED, {"message": "Secure files are not configured."})
+        return ref, None
+
+    def view(self, caller: dict, value: str) -> Outcome:
+        """Signed short-lived URL for the file's owner or a PRC admin."""
+        ref, refused = self._authorize(caller, value)
+        if refused:
+            return refused
         ttl = self.settings.url_ttl_seconds
         return Outcome(200, Code.OK, {"url": self._storage.signed_url(ref, ttl), "expiresIn": ttl})
+
+    def content(self, caller: dict, value: str) -> tuple[Outcome, bytes, str]:
+        """The file's bytes and media type, for showing it inline (the admin
+        portal's document viewer). Cloudinary's signed download link is served
+        as an attachment, which a browser will not render inside the page."""
+        ref, refused = self._authorize(caller, value)
+        if refused:
+            return refused, b"", ""
+        try:
+            data = self._storage.download(ref, self.settings.max_bytes(ref.kind))
+        except StorageError as error:
+            log.warning("Private download failed for %s: %s", ref.public_id, error)
+            return Outcome(502, Code.STORAGE_FAILED, {"message": "Could not load the file."}), b"", ""
+        return Outcome(200, Code.OK), data, MEDIA_TYPES.get(ref.extension, "application/octet-stream")

@@ -102,6 +102,15 @@ def request_expired(request: dict) -> tuple[str, str]:
     )
 
 
+def prc_stock_available(request: dict, reserved_units: int, pickup_instructions: str) -> tuple[str, str]:
+    units = f"{reserved_units} unit{'' if reserved_units == 1 else 's'}"
+    return (
+        "Blood available at PRC Sorsogon",
+        _excerpt(f"PRC reserved {units} of {_blood(request)} for your request. "
+                 f"{pickup_instructions}", 240),
+    )
+
+
 def request_open(request: dict) -> tuple[str, str]:
     urgent = str(request.get("urgency") or "").strip().lower() == "urgent"
     title = "Urgent: blood donor needed" if urgent else "Blood donor needed near you"

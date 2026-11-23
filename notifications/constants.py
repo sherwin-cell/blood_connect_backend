@@ -72,6 +72,8 @@ class NotificationType:
     REQUEST_EXPIRED = "request_expired"  # set by jobs/request_expiration.py
     REQUEST_OPEN = "request_open"  # to matching donors
     REQUEST_CLOSED_FOR_DONOR = "request_closed_for_donor"
+    # PRC reserved units from its own blood bank (POST /api/admin/requests/{id}/prc-stock).
+    PRC_STOCK_AVAILABLE = "prc_stock_available"
 
     OFFER_RECEIVED = "offer_received"  # to requester
     OFFER_CONFIRMED_FOR_REQUESTER = "offer_confirmed_for_requester"

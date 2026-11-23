@@ -266,7 +266,9 @@ class PushPreferencesTest(unittest.TestCase):
     def test_every_other_type_has_a_category(self):
         types = {v for k, v in vars(T).items() if k.isupper()}
         uncategorised = types - set(CATEGORY_BY_TYPE)
-        self.assertEqual(uncategorised, {T.ID_VERIFICATION_APPROVED, T.ID_VERIFICATION_REJECTED})
+        # Always pushed: account results, and reserved blood waiting at PRC.
+        self.assertEqual(uncategorised, {T.ID_VERIFICATION_APPROVED, T.ID_VERIFICATION_REJECTED,
+                                         T.PRC_STOCK_AVAILABLE})
 
 
 class DeliveryMutedTest(unittest.TestCase):

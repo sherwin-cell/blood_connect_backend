@@ -1,11 +1,11 @@
-"""POST /api/files/{kind} and GET /api/files/view"""
+"""POST /api/files/{kind}, GET /api/files/view and GET /api/files/content"""
 
 from __future__ import annotations
 
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from auth import verify_firebase_claims
 from verification.config import FaceVerificationSettings
@@ -79,3 +79,25 @@ def view_file(
     outcome = service.view(claims, ref)
     return JSONResponse(status_code=outcome.status, content=outcome.json(),
                         headers={"Cache-Control": "no-store"})
+
+
+@router.get("/content")
+def file_content(
+    ref: str = Query(..., description="A secure:// reference from Firestore."),
+    claims: dict = Depends(verify_firebase_claims),
+    service: FileService = Depends(get_service),
+):
+    """The file itself, served inline, for the file's owner or a PRC admin.
+
+    The admin portal shows Blood Request Forms and ID photos side by side with
+    the typed request fields; Cloudinary's signed link downloads instead.
+    """
+    outcome, data, media_type = service.content(claims, ref)
+    if outcome.status != 200:
+        return JSONResponse(status_code=outcome.status, content=outcome.json(),
+                            headers={"Cache-Control": "no-store"})
+    return Response(content=data, media_type=media_type, headers={
+        "Cache-Control": "no-store",
+        "Content-Disposition": "inline",
+        "X-Content-Type-Options": "nosniff",
+    })

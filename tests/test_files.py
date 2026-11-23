@@ -39,6 +39,11 @@ class FakeStorage:
     def signed_url(self, ref, ttl):
         return f"https://signed.example/{ref.public_id}?ttl={ttl}"
 
+    def download(self, ref, max_bytes):
+        if self.fail:
+            raise StorageError("down")
+        return PDF if ref.kind == "brf" else JPEG
+
 
 def make(storage="default", admins=()):
     return FileService(FakeStorage() if storage == "default" else storage,
@@ -120,6 +125,21 @@ class ViewTest(unittest.TestCase):
         self.assertEqual(make().view({"uid": UID}, "https://res.cloudinary.com/x").status, 400)
 
 
+class ContentTest(unittest.TestCase):
+    def test_admin_gets_bytes_with_media_type(self):
+        outcome, data, media = make(admins={"prc"}).content({"uid": "prc"}, BRF)
+        self.assertEqual((outcome.status, media), (200, "application/pdf"))
+        self.assertTrue(data.startswith(b"%PDF"))
+        _, _, media = make().content({"uid": UID}, FRONT)
+        self.assertEqual(media, "image/jpeg")
+
+    def test_refused_or_failed(self):
+        outcome, data, _ = make().content({"uid": "someone-else"}, BRF)
+        self.assertEqual((outcome.status, data), (403, b""))
+        outcome, _, _ = make(storage=FakeStorage(fail=True)).content({"uid": UID}, BRF)
+        self.assertEqual(outcome.status, 502)
+
+
 class StorageTest(unittest.TestCase):
     def storage(self):
         return PrivateCloudinary("cloud", "key", "secret", FOLDER, clock=lambda: 1_000,
@@ -187,6 +207,19 @@ class EndpointTest(unittest.TestCase):
                                    headers={"Authorization": "Bearer t"})
         self.assertEqual(view.status_code, 200)
         self.assertEqual(view.headers["cache-control"], "no-store")
+
+    def test_content_is_inline_and_not_cached(self):
+        with mock.patch("auth.auth.verify_id_token", return_value={"uid": UID}):
+            response = self.client.get("/api/files/content", params={"ref": BRF},
+                                       headers={"Authorization": "Bearer t"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "application/pdf")
+        self.assertEqual(response.headers["content-disposition"], "inline")
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        with mock.patch("auth.auth.verify_id_token", return_value={"uid": "intruder"}):
+            refused = self.client.get("/api/files/content", params={"ref": BRF},
+                                      headers={"Authorization": "Bearer t"})
+        self.assertEqual(refused.status_code, 403)
 
     def test_other_user_cannot_view(self):
         with mock.patch("auth.auth.verify_id_token", return_value={"uid": "intruder"}):

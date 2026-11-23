@@ -54,6 +54,8 @@ CATEGORY_BY_TYPE = {
     T.CHAT_MESSAGE: CHAT_MESSAGES,
     T.ANNOUNCEMENT: ANNOUNCEMENTS,
     # ID_VERIFICATION_* are not listed: account results are always pushed.
+    # PRC_STOCK_AVAILABLE is not listed either: reserved blood must be picked
+    # up in time, so that notice is pushed even with request updates off.
 }
 
 

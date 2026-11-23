@@ -19,6 +19,7 @@ from jobs.request_expiration import ExpirationSettings, RequestExpirer
 from verification import router as face_verification
 from account import router as account_router
 from files import router as files_router
+from prc_stock import router as prc_stock_router
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -83,6 +84,7 @@ async def lifespan(_app: FastAPI):
         face_verification.configure(face_verification.build_service(db))
         account_router.configure(account_router.build_service(db))
         files_router.configure(files_router.build_service(db))
+        prc_stock_router.configure(prc_stock_router.build_service(db))
     else:
         log.warning("Firebase credentials missing; face verification and "
                     "account deletion disabled.")
@@ -92,6 +94,7 @@ async def lifespan(_app: FastAPI):
     face_verification.configure(None)
     account_router.configure(None)
     files_router.configure(None)
+    prc_stock_router.configure(None)
     if request_expirer is not None:
         request_expirer.stop()
     if notification_worker is not None:
@@ -145,8 +148,12 @@ app.include_router(face_verification.router)
 # DELETE /api/admin/users/{uid} (PRC admin's Firebase ID token required)
 app.include_router(account_router.router)
 
-# POST /api/files/{id_front|id_back|brf}, GET /api/files/view (Firebase ID token)
+# POST /api/files/{id_front|id_back|brf}, GET /api/files/view, GET /api/files/content
+# (Firebase ID token)
 app.include_router(files_router.router)
+
+# POST /api/admin/requests/{request_id}/prc-stock (admin portal)
+app.include_router(prc_stock_router.router)
 
 
 # ------------------------------------------------------------------------------

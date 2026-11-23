@@ -44,6 +44,7 @@ from .match_chat import ensure_match_chat
 from .events import Intent, Kind
 from .matching import DonorCandidate, Location, blood_type_matches, is_donor_eligible, select_donors
 from .outbox import COLLECTION as NOTIFICATIONS, PUSH_PENDING, Outbox
+from prc_stock.model import covered_by_prc_stock
 
 log = logging.getLogger(__name__)
 
@@ -400,6 +401,12 @@ class NotificationWorker:
 
     def _request_approved(self, intent: Intent) -> None:
         request_id = intent.ids["requestId"]
+        if covered_by_prc_stock(intent.data):
+            # PRC approved it while reserving every unit from its own stock
+            # (prc_stock/): the requester already got the "Blood available at
+            # PRC" notice, and no donors are needed.
+            log.info("Request %s is covered by PRC stock; donors not alerted", request_id)
+            return
         self._notify(self._requester_id(intent.data), T.REQUEST_APPROVED, intent,
                      content.request_approved(intent.data), Route.REQUEST_OFFERS,
                      requestId=request_id)
