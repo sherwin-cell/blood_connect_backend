@@ -7,6 +7,7 @@ from typing import Iterable, Optional
 from firebase_admin import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
+from files.refs import SCHEME as SECURE_SCHEME
 from notifications.constants import OfferStatus, RequestStatus
 
 IN_PROGRESS_REQUESTS = (
@@ -118,11 +119,13 @@ class FirestoreAccountStore:
         return self._commit(updates)
 
     def image_urls(self, uid: str) -> list[str]:
+        """Public image URLs and private secure:// references to destroy."""
         urls: list[str] = []
         for collection in ("users", "donors", "id_verifications"):
             snapshot = self._db.collection(collection).document(uid).get()
             if snapshot.exists:
                 urls.extend(collect_urls(snapshot.to_dict(), self._image_prefix))
+                urls.extend(collect_urls(snapshot.to_dict(), SECURE_SCHEME))
         attempts = self._db.collection("face_verification_attempts").where(
             filter=_where("userId", "==", uid))
         for snapshot in attempts.stream():

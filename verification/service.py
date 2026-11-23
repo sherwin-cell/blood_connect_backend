@@ -32,6 +32,7 @@ from notifications.constants import PH_TZ
 
 from .config import FaceVerificationSettings
 from .images import InvalidImage, is_allowed_image_url, validate_selfie
+from files.refs import is_secure_ref, parse_ref
 from .matcher import FaceMatcher, MatcherError, NoFaceFound
 from .storage import (
     SERVER_TIMESTAMP_MARKER,
@@ -177,7 +178,13 @@ class FaceVerificationService:
         record["idImageUrl"] = id_url if isinstance(id_url, str) else None
         if not isinstance(id_url, str) or not id_url.strip():
             return finish(Outcome(409, Code.ID_REQUIRED))
-        if not is_allowed_image_url(id_url, self._settings.allowed_image_prefix):
+        if is_secure_ref(id_url):
+            # Private upload: must be this user's own ID front photo.
+            ref = parse_ref(id_url, self._settings.private_folder)
+            if ref is None or ref.uid != uid or ref.kind != "id_front":
+                return finish(Outcome(422, Code.INVALID_ID_IMAGE_URL))
+        elif not is_allowed_image_url(id_url, self._settings.allowed_image_prefix):
+            # Legacy public upload on our Cloudinary account.
             return finish(Outcome(422, Code.INVALID_ID_IMAGE_URL))
 
         # 4. Selfie upload.

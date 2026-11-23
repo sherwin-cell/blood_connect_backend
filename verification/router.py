@@ -13,7 +13,10 @@ from auth import verify_firebase_token
 from .config import FaceVerificationSettings
 from .matcher import OpenCvSFaceMatcher
 from .service import FaceVerificationService
-from .storage import CloudinaryUploader, FirestoreVerificationStore, fetch_image
+from files.refs import is_secure_ref, parse_ref
+from files.router import build_private_storage
+
+from .storage import CloudinaryUploader, FirestoreVerificationStore, StorageError, fetch_image
 
 router = APIRouter(prefix="/api/verification", tags=["Identity Verification"])
 
@@ -32,12 +35,24 @@ def build_service(db, settings: Optional[FaceVerificationSettings] = None) -> Fa
         ).upload
         if settings.can_upload else None
     )
+    fetch_public = partial(fetch_image, allowed_prefix=settings.allowed_image_prefix,
+                           max_bytes=settings.max_id_image_bytes)
+    private = build_private_storage()
+
+    def fetch_id_image(value: str) -> bytes:
+        """ID front photo: a private secure:// upload, or a legacy public URL."""
+        if not is_secure_ref(value):
+            return fetch_public(value)
+        ref = parse_ref(value, settings.private_folder)
+        if ref is None or private is None:
+            raise StorageError("Private ID photo is not readable here.")
+        return private.download(ref, settings.max_id_image_bytes)
+
     return FaceVerificationService(
         store=FirestoreVerificationStore(db),
         matcher=OpenCvSFaceMatcher(settings.models_dir, settings.detection_score_threshold),
         settings=settings,
-        fetch_id_image=partial(fetch_image, allowed_prefix=settings.allowed_image_prefix,
-                               max_bytes=settings.max_id_image_bytes),
+        fetch_id_image=fetch_id_image,
         upload_selfie=uploader,
     )
 

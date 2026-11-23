@@ -11,6 +11,8 @@ from firebase_admin import auth
 
 from auth import verify_firebase_claims
 from verification.config import FaceVerificationSettings
+from files.refs import is_secure_ref, parse_ref
+from files.router import build_private_storage
 from verification.storage import CloudinaryUploader
 
 from .service import DEFAULT_MAX_AUTH_AGE_SECONDS, AccountDeletionService
@@ -32,13 +34,21 @@ def build_service(db) -> AccountDeletionService:
     settings = FaceVerificationSettings.from_env()
     delete_image = None
     if settings.can_upload:
-        delete_image = CloudinaryUploader(
+        destroy_public = CloudinaryUploader(
             settings.cloudinary_cloud_name,
             settings.cloudinary_api_key,
             settings.cloudinary_api_secret,
             settings.cloudinary_folder,
             settings.allowed_image_prefix,
         ).destroy
+        private = build_private_storage()
+
+        def delete_image(value: str) -> bool:
+            """Public URL on our account, or a private secure:// upload."""
+            if not is_secure_ref(value):
+                return destroy_public(value)
+            ref = parse_ref(value, settings.private_folder)
+            return private is not None and ref is not None and private.destroy(ref)
     max_age = int(os.getenv("ACCOUNT_DELETE_MAX_AUTH_AGE_SECONDS",
                             str(DEFAULT_MAX_AUTH_AGE_SECONDS)))
     return AccountDeletionService(

@@ -34,6 +34,8 @@ class FaceVerificationSettings:
     cloudinary_api_key: str = ""
     cloudinary_api_secret: str = ""
     cloudinary_folder: str = "face_verifications"
+    # Private uploads (ID photos, Blood Request Forms): see files/.
+    private_folder: str = "blood_connect_private"
     # YuNet detection confidence needed to accept a face (0..1).
     detection_score_threshold: float = 0.8
     models_dir: Path = ROOT / "models"
@@ -55,6 +57,8 @@ class FaceVerificationSettings:
             cloudinary_api_key=os.getenv("CLOUDINARY_API_KEY", "").strip(),
             cloudinary_api_secret=os.getenv("CLOUDINARY_API_SECRET", "").strip(),
             cloudinary_folder=os.getenv("CLOUDINARY_FACE_FOLDER", "face_verifications").strip(),
+            private_folder=os.getenv("CLOUDINARY_PRIVATE_FOLDER", "blood_connect_private").strip()
+            or "blood_connect_private",
             detection_score_threshold=_float("FACE_DETECTION_SCORE_THRESHOLD", 0.8),
             models_dir=Path(os.getenv("FACE_MODELS_DIR", str(ROOT / "models"))),
         )

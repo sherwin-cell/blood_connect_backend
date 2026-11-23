@@ -576,3 +576,33 @@ class MatcherSetup(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrivateIdPhoto(unittest.TestCase):
+    """ID front stored privately (files/): accepted only as the user's own id_front."""
+
+    OWN = f"secure://image/blood_connect_private/{UID}/id_front/a1.jpg"
+
+    def test_own_private_id_photo_is_fetched_and_matched(self):
+        fetched = []
+        service, _, matcher, _ = make(
+            store=FakeStore(submission={"frontIdImageUrl": self.OWN}),
+            fetch=lambda value: fetched.append(value) or b"id-image-bytes",
+        )
+        outcome = service.verify(UID, SELFIE)
+        self.assertNotEqual(outcome.code, Code.INVALID_ID_IMAGE_URL)
+        self.assertEqual(fetched, [self.OWN])
+        self.assertEqual(matcher.calls, 1)
+
+    def test_someone_elses_or_wrong_kind_is_rejected(self):
+        for value in (
+            "secure://image/blood_connect_private/other-user/id_front/a1.jpg",
+            f"secure://image/blood_connect_private/{UID}/id_back/a1.jpg",
+            f"secure://raw/blood_connect_private/{UID}/brf/a1.pdf",
+            f"secure://image/elsewhere/{UID}/id_front/a1.jpg",
+        ):
+            service, store, matcher, _ = make(store=FakeStore(submission={"frontIdImageUrl": value}))
+            outcome = service.verify(UID, SELFIE)
+            self.assertEqual((outcome.status, outcome.code), (422, Code.INVALID_ID_IMAGE_URL), value)
+            self.assertEqual(matcher.calls, 0, value)
+            self.assertEqual(store.quota, {}, value)
