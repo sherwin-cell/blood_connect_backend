@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from routers.donor_notifications import router as donor_notifications_router
 from notifications.config import Settings
 from notifications.worker import NotificationWorker
+from jobs.request_expiration import ExpirationSettings, RequestExpirer
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -52,11 +53,12 @@ db = firestore.client() if cred else None
 # ------------------------------------------------------------------------------
 
 notification_worker = None
+request_expirer = None
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global notification_worker
+    global notification_worker, request_expirer
 
     settings = Settings.from_env()
     if settings.enabled and db is not None:
@@ -65,8 +67,18 @@ async def lifespan(_app: FastAPI):
     elif settings.enabled:
         log.warning("Firebase credentials missing; notification worker not started.")
 
+    # Marks open blood requests past their needed-by date as expired.
+    expiration_settings = ExpirationSettings.from_env()
+    if expiration_settings.enabled and db is not None:
+        request_expirer = RequestExpirer(db, expiration_settings)
+        request_expirer.start()
+    elif expiration_settings.enabled:
+        log.warning("Firebase credentials missing; request expiration not started.")
+
     yield
 
+    if request_expirer is not None:
+        request_expirer.stop()
     if notification_worker is not None:
         notification_worker.stop()
 
@@ -149,6 +161,9 @@ def health_check():
         "service": "Blood-Connect API",
         "notificationWorker": (
             notification_worker.status() if notification_worker else "disabled"
+        ),
+        "requestExpiration": (
+            request_expirer.status() if request_expirer else "disabled"
         ),
     }
 
