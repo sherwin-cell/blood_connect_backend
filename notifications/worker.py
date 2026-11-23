@@ -344,6 +344,7 @@ class NotificationWorker:
             Kind.REQUEST_REJECTED: self._request_rejected,
             Kind.REQUEST_FULFILLED: self._request_closed,
             Kind.REQUEST_CANCELLED: self._request_closed,
+            Kind.REQUEST_EXPIRED: self._request_closed,
             Kind.OFFER_CREATED: self._offer_created,
             Kind.OFFER_APPROVED: self._offer_approved,
             Kind.OFFER_REJECTED: self._offer_rejected,
@@ -408,14 +409,23 @@ class NotificationWorker:
 
     def _request_closed(self, intent: Intent) -> None:
         request_id = intent.ids["requestId"]
-        status = (
-            RequestStatus.FULFILLED if intent.kind == Kind.REQUEST_FULFILLED
-            else RequestStatus.CANCELLED
-        )
+        status = {
+            Kind.REQUEST_FULFILLED: RequestStatus.FULFILLED,
+            Kind.REQUEST_EXPIRED: RequestStatus.EXPIRED,
+        }.get(intent.kind, RequestStatus.CANCELLED)
+
+        # The requester cancelled it themselves, so they get no notice for that.
         if status == RequestStatus.FULFILLED:
             self._notify(self._requester_id(intent.data), T.REQUEST_FULFILLED, intent,
                          content.request_fulfilled(intent.data), Route.ACTIVITY,
                          requestId=request_id)
+        elif status == RequestStatus.EXPIRED:
+            # Activity tab shows the request as Expired; they can post a new one.
+            self._notify(self._requester_id(intent.data), T.REQUEST_EXPIRED, intent,
+                         content.request_expired(intent.data), Route.ACTIVITY,
+                         requestId=request_id)
+
+        # Donors with pending or approved offers learn the request closed.
 
         offers = (
             self._db.collection("blood_requests").document(request_id).collection("offers")

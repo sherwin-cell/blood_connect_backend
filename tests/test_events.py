@@ -79,11 +79,19 @@ class RequestEvents(unittest.TestCase):
             detect(events.REQUESTS, self.ids, {"status": "approved"}, {"status": "active"}), []
         )
 
-    def test_matched_and_expired_are_silent(self):
-        for status in ("matched", "expired"):
-            self.assertEqual(
-                detect(events.REQUESTS, self.ids, {"status": "active"}, {"status": status}), []
-            )
+    def test_matched_is_silent(self):
+        self.assertEqual(
+            detect(events.REQUESTS, self.ids, {"status": "active"}, {"status": "matched"}), []
+        )
+
+    def test_expiry_notifies_once(self):
+        before = {"status": "active", "bloodType": "O+"}
+        after = {"status": "expired", "bloodType": "O+", "expiredAt": T2, "updatedAt": T1}
+        intents = detect(events.REQUESTS, self.ids, before, after)
+        self.assertEqual(kinds(intents), [Kind.REQUEST_EXPIRED])
+        self.assertEqual(intents[0].occurred_at, T2)
+        # Later edits to the expired request are not a second expiry.
+        self.assertEqual(detect(events.REQUESTS, self.ids, after, {**after, "updatedAt": T2}), [])
 
 
 class OfferEvents(unittest.TestCase):
@@ -139,3 +147,116 @@ class OtherEvents(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RequestExpiredNotification(unittest.TestCase):
+    def test_message(self):
+        from notifications import content
+
+        self.assertEqual(
+            content.request_expired({"bloodType": "AB-"}),
+            (
+                "Blood request expired",
+                "Your blood request for AB- has expired. "
+                "Submit a new request if blood is still needed.",
+            ),
+        )
+
+    def test_donor_message_has_expired_wording(self):
+        from notifications import content
+
+        self.assertEqual(
+            content.request_closed_for_donor({"bloodType": "O+"}, "expired"),
+            ("Request expired", "The O+ request you offered to help with has expired."),
+        )
+        # Cancelled and fulfilled wording is unchanged.
+        self.assertIn("cancelled by the requester",
+                      content.request_closed_for_donor({"bloodType": "O+"}, "cancelled")[1])
+        self.assertIn("fulfilled", content.request_closed_for_donor({"bloodType": "O+"}, "fulfilled")[1])
+
+    def _run_worker(self, kind, offers):
+        from unittest import mock
+
+        from notifications.events import Intent
+        from notifications.worker import NotificationWorker
+
+        db = _FakeOffersDb(offers)
+        worker = NotificationWorker.__new__(NotificationWorker)  # skip Firestore setup
+        worker._db = db
+        worker._notify = mock.Mock()
+        data = {"status": "expired", "bloodType": "O+", "requesterId": "u1", "userId": "legacy"}
+        worker._handle(Intent(kind, "req1", T2, data, {"requestId": "req1"}))
+        return db, [c for c in worker._notify.call_args_list]
+
+    def test_worker_notifies_requester_and_donors_with_active_offers(self):
+        from notifications.constants import NotificationType, Route
+
+        db, calls = self._run_worker(Kind.REQUEST_EXPIRED, {
+            "offer-a": {"donorId": "donor-a", "status": "pending"},
+            "offer-b": {"donorId": "donor-b", "status": "approved"},
+        })
+
+        # Only pending/approved (and legacy accepted) offers are queried.
+        self.assertEqual(db.path, ["blood_requests", "req1", "offers"])
+        f = db.filter
+        self.assertEqual((f.field_path, f.op_string, sorted(f.value)),
+                         ("status", "in", ["accepted", "approved", "pending"]))
+
+        self.assertEqual(len(calls), 3)
+        (user, ntype, intent, (title, message), route), kwargs = calls[0]
+        self.assertEqual((user, ntype, route), ("u1", NotificationType.REQUEST_EXPIRED, Route.ACTIVITY))
+        self.assertEqual(title, "Blood request expired")
+        self.assertEqual(kwargs, {"requestId": "req1"})
+
+        donor_calls = calls[1:]
+        self.assertEqual([c.args[0] for c in donor_calls], ["donor-a", "donor-b"])
+        for call, offer_id in zip(donor_calls, ["offer-a", "offer-b"]):
+            user, ntype, intent, (title, message), route = call.args
+            self.assertEqual(ntype, NotificationType.REQUEST_CLOSED_FOR_DONOR)
+            self.assertEqual(route, Route.MY_OFFERS)
+            self.assertEqual(title, "Request expired")
+            self.assertEqual(message, "The O+ request you offered to help with has expired.")
+            # Keyed by how the request closed, so it never collides with a
+            # cancelled/fulfilled notice for the same request.
+            self.assertEqual(intent.key, "expired_req1")
+            self.assertEqual(call.kwargs, {"requestId": "req1", "offerId": offer_id})
+
+    def test_expiry_with_no_offers_notifies_only_the_requester(self):
+        _, calls = self._run_worker(Kind.REQUEST_EXPIRED, {})
+        self.assertEqual([c.args[0] for c in calls], ["u1"])
+
+    def test_cancel_still_notifies_donors_only(self):
+        _, calls = self._run_worker(Kind.REQUEST_CANCELLED, {"o": {"donorId": "donor-a"}})
+        self.assertEqual([c.args[0] for c in calls], ["donor-a"])
+        self.assertEqual(calls[0].args[3][0], "Request cancelled")
+
+
+class _FakeOffersDb:
+    """Just enough of Firestore for blood_requests/{id}/offers where(...).stream()."""
+
+    def __init__(self, offers):
+        self.offers = offers
+        self.path = []
+        self.filter = None
+
+    def collection(self, name):
+        self.path.append(name)
+        return self
+
+    def document(self, doc_id):
+        self.path.append(doc_id)
+        return self
+
+    def where(self, filter):
+        self.filter = filter
+        return self
+
+    def stream(self):
+        class Snap:
+            def __init__(self, doc_id, data):
+                self.id, self._data = doc_id, data
+
+            def to_dict(self):
+                return self._data
+
+        return [Snap(doc_id, data) for doc_id, data in self.offers.items()]

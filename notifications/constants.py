@@ -69,6 +69,7 @@ class NotificationType:
     REQUEST_APPROVED = "request_approved"
     REQUEST_REJECTED = "request_rejected"
     REQUEST_FULFILLED = "request_fulfilled"
+    REQUEST_EXPIRED = "request_expired"  # set by jobs/request_expiration.py
     REQUEST_OPEN = "request_open"  # to matching donors
     REQUEST_CLOSED_FOR_DONOR = "request_closed_for_donor"
 

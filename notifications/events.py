@@ -39,6 +39,7 @@ class Kind:
     REQUEST_REJECTED = "request_rejected"
     REQUEST_FULFILLED = "request_fulfilled"
     REQUEST_CANCELLED = "request_cancelled"
+    REQUEST_EXPIRED = "request_expired"
     OFFER_CREATED = "offer_created"
     OFFER_APPROVED = "offer_approved"
     OFFER_REJECTED = "offer_rejected"
@@ -152,6 +153,7 @@ _REQUEST_TRANSITIONS = {
     RequestStatus.REJECTED: (Kind.REQUEST_REJECTED, ("reviewedAt", "updatedAt")),
     RequestStatus.FULFILLED: (Kind.REQUEST_FULFILLED, ("fulfilledAt", "updatedAt")),
     RequestStatus.CANCELLED: (Kind.REQUEST_CANCELLED, ("cancelledAt", "updatedAt")),
+    RequestStatus.EXPIRED: (Kind.REQUEST_EXPIRED, ("expiredAt", "updatedAt")),
 }
 
 

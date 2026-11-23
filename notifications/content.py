@@ -94,6 +94,14 @@ def request_fulfilled(request: dict) -> tuple[str, str]:
     )
 
 
+def request_expired(request: dict) -> tuple[str, str]:
+    return (
+        "Blood request expired",
+        f"Your blood request for {_blood(request)} has expired. "
+        "Submit a new request if blood is still needed.",
+    )
+
+
 def request_open(request: dict) -> tuple[str, str]:
     urgent = str(request.get("urgency") or "").strip().lower() == "urgent"
     title = "Urgent: blood donor needed" if urgent else "Blood donor needed near you"
@@ -108,6 +116,11 @@ def request_closed_for_donor(request: dict, status: str) -> tuple[str, str]:
         return (
             "Request fulfilled",
             f"The {_blood(request)} request you offered to help with has been fulfilled. Thank you!",
+        )
+    if status == "expired":
+        return (
+            "Request expired",
+            f"The {_blood(request)} request you offered to help with has expired.",
         )
     return (
         "Request cancelled",
