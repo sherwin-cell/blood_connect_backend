@@ -15,3 +15,7 @@ firebase-adminsdk*.json
 # Editors
 .vscode/
 .idea/
+
+# Downloaded face models (scripts/download_face_models.py)
+models/
+!.env.example

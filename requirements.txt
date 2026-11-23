@@ -5,3 +5,10 @@ uvicorn[standard]==0.52.4
 pydantic==2.13.4
 firebase-admin==7.5.0
 google-cloud-firestore==2.28.1
+
+# Face verification (open-source OpenCV YuNet + SFace models; see
+# scripts/download_face_models.py). Headless: no GUI libraries on servers.
+opencv-python-headless==5.1.0.95
+numpy==2.5.5
+requests==2.34.2
+python-multipart==0.0.32

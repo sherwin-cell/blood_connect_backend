@@ -40,6 +40,7 @@ from .constants import (
     Route,
 )
 from .delivery import Delivery, send_announcement
+from .match_chat import ensure_match_chat
 from .events import Intent, Kind
 from .matching import DonorCandidate, Location, blood_type_matches, is_donor_eligible, select_donors
 from .outbox import COLLECTION as NOTIFICATIONS, PUSH_PENDING, Outbox
@@ -402,10 +403,18 @@ class NotificationWorker:
         self._notify(self._requester_id(intent.data), T.REQUEST_APPROVED, intent,
                      content.request_approved(intent.data), Route.REQUEST_OFFERS,
                      requestId=request_id)
-        for donor in self._matching_donors(intent.data):
+        donors = self._matching_donors(intent.data)
+        for donor in donors:
             self._notify(donor.user_id, T.REQUEST_OPEN, intent,
                          content.request_open(intent.data), Route.REQUEST,
                          requestId=request_id)
+        # Only a count reaches the requester: no donor identities.
+        try:
+            self._db.collection("blood_requests").document(request_id).update(
+                {"matchingDonorsNotified": len(donors)}
+            )
+        except Exception:
+            log.exception("Could not record notified donor count for %s", request_id)
 
     def _request_closed(self, intent: Intent) -> None:
         request_id = intent.ids["requestId"]
@@ -507,6 +516,23 @@ class NotificationWorker:
                      content.offer_approved(intent.data), Route.MY_OFFERS, **ids)
         self._notify(self._offer_requester_id(intent), T.OFFER_CONFIRMED_FOR_REQUESTER, intent,
                      content.offer_confirmed_for_requester(intent.data), Route.REQUEST_OFFERS, **ids)
+        self._open_match_chat(intent)
+
+    def _open_match_chat(self, intent: Intent) -> None:
+        """PRC confirmed this donor: let requester and donor chat."""
+        request_id, offer_id = intent.ids["requestId"], intent.ids["offerId"]
+        requester_id = self._offer_requester_id(intent)
+        requester_name = "Requester"
+        if requester_id:
+            profile = self._db.collection("users").document(requester_id).get()
+            if profile.exists:
+                requester_name = str((profile.to_dict() or {}).get("fullName") or requester_name)
+        try:
+            ensure_match_chat(self._db, request_id, offer_id, requester_id,
+                              intent.data.get("donorId"), requester_name,
+                              str(intent.data.get("donorName") or "Donor"))
+        except Exception:
+            log.exception("Could not open match chat for %s/%s", request_id, offer_id)
 
     def _offer_rejected(self, intent: Intent) -> None:
         self._notify(intent.data.get("donorId"), T.OFFER_REJECTED, intent,

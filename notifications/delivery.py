@@ -10,6 +10,8 @@ pushStatus after delivery:
     partial    some devices accepted it
     failed     no device accepted it
     no_tokens  the user has no registered devices
+    muted      the user switched this kind of push off (see preferences.py);
+               the in-app notification record is kept
     unknown    sending raised unexpectedly; not retried, to avoid duplicates
 
 Device tokens that FCM reports as unregistered or invalid are deleted from
@@ -26,6 +28,7 @@ from google.cloud.firestore_v1 import transactional
 
 from .constants import ANDROID_CHANNEL_ID, ANNOUNCEMENTS_TOPIC
 from .outbox import COLLECTION, CONTEXT_FIELDS, PUSH_PENDING
+from .preferences import push_allowed
 
 log = logging.getLogger(__name__)
 
@@ -97,9 +100,14 @@ class Delivery:
 
     def _send_to_user(self, notification_id: str, record: dict) -> dict:
         user_id = record.get("userId")
+        user_ref = self._db.collection("users").document(user_id)
+        user = user_ref.get()
+        if not push_allowed(record.get("type"), user.to_dict() if user.exists else None):
+            return {"pushStatus": "muted", "sentCount": 0, "failedCount": 0}
+
         token_refs = {}
         for snapshot in (
-            self._db.collection("users").document(user_id).collection("fcm_tokens").stream()
+            user_ref.collection("fcm_tokens").stream()
         ):
             token = (snapshot.to_dict() or {}).get("token")
             if token:

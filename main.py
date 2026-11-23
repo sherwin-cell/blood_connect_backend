@@ -6,16 +6,17 @@ from contextlib import asynccontextmanager
 
 import firebase_admin
 
-from firebase_admin import credentials, firestore, auth
-from fastapi import FastAPI, HTTPException, Depends, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
+from firebase_admin import credentials, firestore
+from fastapi import FastAPI, status
+from fastapi.responses import JSONResponse
 
 # Import donor notification router
 from routers.donor_notifications import router as donor_notifications_router
 from notifications.config import Settings
 from notifications.worker import NotificationWorker
 from jobs.request_expiration import ExpirationSettings, RequestExpirer
+from verification import router as face_verification
+from account import router as account_router
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -75,8 +76,18 @@ async def lifespan(_app: FastAPI):
     elif expiration_settings.enabled:
         log.warning("Firebase credentials missing; request expiration not started.")
 
+    # Face matching for POST /api/verification/face.
+    if db is not None:
+        face_verification.configure(face_verification.build_service(db))
+        account_router.configure(account_router.build_service(db))
+    else:
+        log.warning("Firebase credentials missing; face verification and "
+                    "account deletion disabled.")
+
     yield
 
+    face_verification.configure(None)
+    account_router.configure(None)
     if request_expirer is not None:
         request_expirer.stop()
     if notification_worker is not None:
@@ -97,9 +108,6 @@ app = FastAPI(
     version="2.2.0"
 )
 
-security = HTTPBearer()
-
-
 # ------------------------------------------------------------------------------
 # 4. Register API Routers
 # ------------------------------------------------------------------------------
@@ -109,49 +117,15 @@ security = HTTPBearer()
 # POST /api/donors/notify-status
 app.include_router(donor_notifications_router)
 
+# POST /api/verification/face (Firebase ID token required)
+app.include_router(face_verification.router)
 
-# ------------------------------------------------------------------------------
-# 5. Firebase Authentication Dependency
-# ------------------------------------------------------------------------------
-
-def verify_firebase_token(
-    credentials_obj: HTTPAuthorizationCredentials = Depends(security)
-) -> str:
-    """
-    Verify a Firebase ID token and return the authenticated user's UID.
-    """
-
-    token = credentials_obj.credentials
-
-    try:
-        decoded_token = auth.verify_id_token(token)
-        return decoded_token["uid"]
-
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired Firebase authentication token."
-        )
+# DELETE /api/account (Firebase ID token from a recent sign-in required)
+app.include_router(account_router.router)
 
 
 # ------------------------------------------------------------------------------
-# 6. Identity Verification Request Schema
-# ------------------------------------------------------------------------------
-
-class VerificationRequest(BaseModel):
-    user_id: str = Field(..., alias="userId")
-    id_image_url: str = Field(..., alias="idImageUrl")
-    selfie_image_url: str = Field(..., alias="selfieImageUrl")
-    face_match_confidence: float = Field(..., alias="faceMatchConfidence")
-    face_match_passed: bool = Field(..., alias="faceMatchPassed")
-    verification_status: str = Field(..., alias="status")
-
-    class Config:
-        populate_by_name = True
-
-
-# ------------------------------------------------------------------------------
-# 7. Health Check Endpoints
+# 4b. Health Check Endpoints
 # ------------------------------------------------------------------------------
 
 @app.get("/health", tags=["System"])
@@ -177,62 +151,19 @@ def root():
 
 
 # ------------------------------------------------------------------------------
-# 8. Identity Verification Endpoint
+# 5. Legacy identity verification endpoint (removed)
 # ------------------------------------------------------------------------------
 
-@app.post("/api/verify", tags=["Identity Verification"])
-async def verify_identity(
-    payload: VerificationRequest,
-    authenticated_uid: str = Depends(verify_firebase_token)
-):
+@app.post("/api/verify", tags=["Identity Verification"], status_code=status.HTTP_410_GONE)
+def verify_identity_removed():
+    """Removed: it trusted a match result sent by the app.
+
+    Use POST /api/verification/face, which runs the match on the server.
     """
-    Save identity verification data for the authenticated user.
-
-    This preserves the existing identity verification behavior.
-    """
-
-    # Ensure the authenticated user matches the requested user.
-    if authenticated_uid != payload.user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden: User ID mismatch."
-        )
-
-    # Persist verification records to Firestore.
-    if db:
-        is_verified = payload.verification_status == "approved"
-
-        # Update user verification status.
-        user_ref = db.collection("users").document(payload.user_id)
-
-        user_ref.set(
-            {
-                "isVerified": is_verified,
-                "verificationStatus": payload.verification_status,
-                "updatedAt": firestore.SERVER_TIMESTAMP
-            },
-            merge=True
-        )
-
-        # Save verification audit record.
-        audit_ref = db.collection("verifications").document(payload.user_id)
-
-        audit_ref.set(
-            {
-                "userId": payload.user_id,
-                "idImageUrl": payload.id_image_url,
-                "selfieImageUrl": payload.selfie_image_url,
-                "matchScore": payload.face_match_confidence,
-                "faceMatchPassed": payload.face_match_passed,
-                "status": payload.verification_status,
-                "provider": "local_facenet",
-                "timestamp": firestore.SERVER_TIMESTAMP
-            }
-        )
-
-    return {
-        "success": True,
-        "verified": payload.verification_status == "approved",
-        "status": payload.verification_status,
-        "matchScore": payload.face_match_confidence
-    }
+    return JSONResponse(
+        status_code=status.HTTP_410_GONE,
+        content={
+            "detail": "This endpoint was removed. Use POST /api/verification/face.",
+            "replacement": "/api/verification/face",
+        },
+    )
