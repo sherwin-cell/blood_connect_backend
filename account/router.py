@@ -1,4 +1,4 @@
-"""DELETE /api/account"""
+"""DELETE /api/account and DELETE /api/admin/users/{uid}"""
 
 from __future__ import annotations
 
@@ -68,4 +68,16 @@ def delete_account(
     """Delete the caller's account and personal data. Requires a sign-in
     within the last few minutes (the app re-authenticates first)."""
     outcome = service.delete(claims["uid"], claims.get("auth_time"))
+    return JSONResponse(status_code=outcome.status_code, content=outcome.body())
+
+
+@router.delete("/admin/users/{uid}")
+def delete_user_as_admin(
+    uid: str,
+    claims: dict = Depends(verify_firebase_claims),
+    service: AccountDeletionService = Depends(get_service),
+):
+    """PRC deletes a user's account and personal data from the admin portal,
+    with the same cleanup as the app's Delete Account."""
+    outcome = service.delete_by_admin(uid, claims)
     return JSONResponse(status_code=outcome.status_code, content=outcome.body())

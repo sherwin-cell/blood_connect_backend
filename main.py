@@ -8,6 +8,7 @@ import firebase_admin
 
 from firebase_admin import credentials, firestore
 from fastapi import FastAPI, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 # Import donor notification router
@@ -108,6 +109,23 @@ app = FastAPI(
     version="2.2.0"
 )
 
+# The PRC admin portal (blood-connect-admin) calls the API from the browser.
+# Comma-separated origins; set ADMIN_CORS_ORIGINS to the deployed portal URL.
+# The mobile app is not a browser and needs no CORS.
+admin_origins = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv(
+        "ADMIN_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+    ).split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=admin_origins,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
 # ------------------------------------------------------------------------------
 # 4. Register API Routers
 # ------------------------------------------------------------------------------
@@ -121,6 +139,7 @@ app.include_router(donor_notifications_router)
 app.include_router(face_verification.router)
 
 # DELETE /api/account (Firebase ID token from a recent sign-in required)
+# DELETE /api/admin/users/{uid} (PRC admin's Firebase ID token required)
 app.include_router(account_router.router)
 
 

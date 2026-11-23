@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Iterable, Optional
 
 from firebase_admin import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -152,8 +152,15 @@ class FirestoreAccountStore:
         counts["chats"] = self._delete_query(chats)
         return counts
 
-    def record_deletion(self, uid: str, summary: dict) -> None:
+    def record_deletion(self, uid: str, summary: dict, deleted_by: Optional[str] = None) -> None:
         self._db.collection("account_deletions").document(uid).set({
             "deletedAt": firestore.SERVER_TIMESTAMP,
             "summary": summary,
+            # The admin's uid when PRC deleted the account; absent for self-deletion.
+            **({"deletedBy": deleted_by} if deleted_by else {}),
         })
+
+    def is_admin(self, uid: str) -> bool:
+        """Same check as firestore.rules isAdmin() (role on users/{uid})."""
+        snapshot = self._db.collection("users").document(uid).get()
+        return snapshot.exists and (snapshot.to_dict() or {}).get("role") == "admin"

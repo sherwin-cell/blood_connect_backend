@@ -18,6 +18,12 @@ What happens, in order:
 5. The Firebase Auth user is deleted last, so a failure earlier can be
    retried by the still-signed-in user. Every step is idempotent.
 
+DELETE /api/admin/users/{uid} runs the same steps for a PRC admin removing
+someone else's account from the admin portal. The caller must be an admin
+(the `admin` custom claim or users/{uid}.role == "admin", as in
+firestore.rules isAdmin()); admins cannot delete themselves this way or
+delete other admins.
+
 Closed blood requests and offers (fulfilled, cancelled, donated, ...) stay:
 they are PRC's service records and also belong to the other party.
 """
@@ -33,12 +39,16 @@ log = logging.getLogger(__name__)
 
 DEFAULT_MAX_AUTH_AGE_SECONDS = 300
 CANCEL_REASON = "The requester deleted their Blood-Connect account."
+ADMIN_CANCEL_REASON = "PRC removed the requester's Blood-Connect account."
 
 
 class Code:
     DELETED = "deleted"
     REQUIRES_RECENT_LOGIN = "requires_recent_login"
     FAILED = "deletion_failed"
+    FORBIDDEN = "forbidden"
+    CANNOT_DELETE_SELF = "cannot_delete_self"
+    CANNOT_DELETE_ADMIN = "cannot_delete_admin"
 
 
 class AccountStore(Protocol):
@@ -46,7 +56,8 @@ class AccountStore(Protocol):
     def withdraw_active_offers(self, uid: str) -> int: ...
     def image_urls(self, uid: str) -> list[str]: ...
     def delete_personal_data(self, uid: str) -> dict[str, int]: ...
-    def record_deletion(self, uid: str, summary: dict) -> None: ...
+    def record_deletion(self, uid: str, summary: dict, deleted_by: Optional[str] = None) -> None: ...
+    def is_admin(self, uid: str) -> bool: ...
 
 
 @dataclass
@@ -95,25 +106,50 @@ class AccountDeletionService:
                 "For your security, please sign in again before deleting your account.",
             )
 
+        return self._run(
+            uid,
+            CANCEL_REASON,
+            deleted_by=None,
+            done="Your account has been deleted.",
+            failed="We could not finish deleting your account. Please try again.",
+        )
+
+    def delete_by_admin(self, uid: str, caller: dict) -> Outcome:
+        """PRC deletes another user's account. `caller` is the admin's decoded ID token."""
+        caller_uid = caller.get("uid")
+        if not caller_uid or not (caller.get("admin") is True or self._store.is_admin(caller_uid)):
+            return Outcome(403, Code.FORBIDDEN, "Only PRC administrators can delete user accounts.")
+        if uid == caller_uid:
+            return Outcome(400, Code.CANNOT_DELETE_SELF,
+                           "You cannot delete your own administrator account here.")
+        if self._store.is_admin(uid):
+            return Outcome(403, Code.CANNOT_DELETE_ADMIN,
+                           "Administrator accounts cannot be deleted from the portal.")
+        return self._run(
+            uid,
+            ADMIN_CANCEL_REASON,
+            deleted_by=caller_uid,
+            done="The account and its personal data have been deleted.",
+            failed="Could not finish deleting the account. Try again; finished steps are skipped.",
+        )
+
+    def _run(self, uid: str, reason: str, *, deleted_by: Optional[str], done: str,
+             failed: str) -> Outcome:
         summary: dict = {}
         try:
-            summary["requestsCancelled"] = self._store.close_open_requests(uid, CANCEL_REASON)
+            summary["requestsCancelled"] = self._store.close_open_requests(uid, reason)
             summary["offersWithdrawn"] = self._store.withdraw_active_offers(uid)
             summary.update(self._delete_images(uid))
             summary.update(self._store.delete_personal_data(uid))
-            self._store.record_deletion(uid, summary)
+            self._store.record_deletion(uid, summary, deleted_by=deleted_by)
             self._delete_auth_user(uid)
         except Exception:
             log.exception("Account deletion for %s failed (done so far: %s)", uid, summary)
-            return Outcome(
-                500,
-                Code.FAILED,
-                "We could not finish deleting your account. Please try again.",
-                summary,
-            )
+            return Outcome(500, Code.FAILED, failed, summary)
 
-        log.info("Deleted account %s: %s", uid, summary)
-        return Outcome(200, Code.DELETED, "Your account has been deleted.", summary)
+        log.info("Deleted account %s%s: %s", uid,
+                 f" (by admin {deleted_by})" if deleted_by else "", summary)
+        return Outcome(200, Code.DELETED, done, summary)
 
     def _delete_images(self, uid: str) -> dict[str, int]:
         if self._delete_image is None:

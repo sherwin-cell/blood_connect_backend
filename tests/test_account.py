@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from account import router as account_router
-from account.service import CANCEL_REASON, AccountDeletionService, Code
+from account.service import ADMIN_CANCEL_REASON, CANCEL_REASON, AccountDeletionService, Code
 from account.store import collect_urls
 from notifications.constants import NotificationType as T
 from notifications.preferences import CATEGORY_BY_TYPE, push_allowed
@@ -16,9 +16,11 @@ PREFIX = "https://res.cloudinary.com/dlk8chosr/"
 
 
 class FakeStore:
-    def __init__(self, fail_on=None):
+    def __init__(self, fail_on=None, admins=()):
         self.calls = []
         self.fail_on = fail_on
+        self.admins = set(admins)
+        self.deleted_by = None
 
     def _call(self, name, result):
         self.calls.append(name)
@@ -39,9 +41,13 @@ class FakeStore:
     def delete_personal_data(self, uid):
         return self._call("delete_personal_data", {"users": 1, "notifications": 4})
 
-    def record_deletion(self, uid, summary):
+    def record_deletion(self, uid, summary, deleted_by=None):
         self.recorded = summary
+        self.deleted_by = deleted_by
         return self._call("record_deletion", None)
+
+    def is_admin(self, uid):
+        return uid in self.admins
 
 
 def make(store=None, delete_image=None, deleted_users=None):
@@ -103,6 +109,44 @@ class AccountDeletionServiceTest(unittest.TestCase):
         self.assertNotIn("record_deletion", store.calls)
 
 
+class AdminDeletionTest(unittest.TestCase):
+    def test_admin_deletes_another_user_with_full_cleanup(self):
+        store, users = FakeStore(admins={"prc"}), []
+        # No recent-sign-in requirement on the admin path.
+        outcome = make(store, delete_image=lambda u: True,
+                       deleted_users=users).delete_by_admin("u1", {"uid": "prc"})
+        self.assertEqual(outcome.status_code, 200)
+        self.assertEqual(store.calls, ["close_open_requests", "withdraw_active_offers",
+                                       "image_urls", "delete_personal_data", "record_deletion"])
+        self.assertEqual(store.reason, ADMIN_CANCEL_REASON)
+        self.assertEqual(store.deleted_by, "prc")
+        self.assertEqual(users, ["u1"])
+
+    def test_admin_custom_claim_is_enough(self):
+        store = FakeStore()
+        outcome = make(store).delete_by_admin("u1", {"uid": "prc", "admin": True})
+        self.assertEqual(outcome.status_code, 200)
+
+    def test_non_admin_is_forbidden(self):
+        store, users = FakeStore(), []
+        outcome = make(store, deleted_users=users).delete_by_admin("u1", {"uid": "u2"})
+        self.assertEqual((outcome.status_code, outcome.code), (403, Code.FORBIDDEN))
+        self.assertEqual(store.calls, [])
+        self.assertEqual(users, [])
+
+    def test_cannot_delete_self_or_other_admins(self):
+        store = FakeStore(admins={"prc", "prc2"})
+        service = make(store)
+        self.assertEqual(service.delete_by_admin("prc", {"uid": "prc"}).code, Code.CANNOT_DELETE_SELF)
+        self.assertEqual(service.delete_by_admin("prc2", {"uid": "prc"}).code, Code.CANNOT_DELETE_ADMIN)
+        self.assertEqual(store.calls, [])
+
+    def test_self_deletion_records_no_admin(self):
+        store = FakeStore()
+        make(store).delete("u1", NOW - 10)
+        self.assertIsNone(store.deleted_by)
+
+
 class EndpointTest(unittest.TestCase):
     def setUp(self):
         app = FastAPI()
@@ -133,6 +177,21 @@ class EndpointTest(unittest.TestCase):
                                           headers={"Authorization": "Bearer t"})
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["code"], Code.REQUIRES_RECENT_LOGIN)
+        self.assertEqual(self.users, [])
+
+    def test_admin_endpoint_deletes_target(self):
+        account_router.configure(make(FakeStore(admins={"prc"}), deleted_users=self.users))
+        with mock.patch("auth.auth.verify_id_token", return_value={"uid": "prc"}):
+            response = self.client.delete("/api/admin/users/u1",
+                                          headers={"Authorization": "Bearer t"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.users, ["u1"])
+
+    def test_admin_endpoint_rejects_non_admin(self):
+        with mock.patch("auth.auth.verify_id_token", return_value={"uid": "u2"}):
+            response = self.client.delete("/api/admin/users/u1",
+                                          headers={"Authorization": "Bearer t"})
+        self.assertEqual(response.status_code, 403)
         self.assertEqual(self.users, [])
 
     def test_not_configured_is_503(self):
