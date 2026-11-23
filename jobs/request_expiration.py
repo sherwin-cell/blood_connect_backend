@@ -1,9 +1,13 @@
-"""Expire blood requests whose needed-by date has passed.
+"""Expire open blood requests that are past their needed-by date or too old.
 
 A request that is open to donors (approved, or its legacy alias active) is
-marked expired once its needed-by date is before today in Philippines time,
-so a request needed "by Nov 23" stays open for all of Nov 23. Requests with
-no needed-by date never expire.
+marked expired as soon as either is true:
+
+- its needed-by date is before today in Philippines time, so a request
+  needed "by Nov 23" stays open for all of Nov 23; or
+- MAX_REQUEST_AGE (7 days) has passed since its createdAt.
+
+A request with neither a needed-by date nor createdAt never expires.
 
 The request and its donor-facing request_summaries entry are updated in one
 transaction, the same way the app closes them on cancel and the admin app on
@@ -20,7 +24,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from firebase_admin import firestore
@@ -41,6 +45,10 @@ EXPIRABLE_STATUSES = RequestStatus.OPEN
 # Where the needed-by date may be stored, newest field first. The app writes
 # neededByDate (and requiredDate); older data may use the others.
 NEEDED_BY_FIELDS = ("neededByDate", "neededBy", "requiredDate")
+
+# Open requests expire this long after createdAt, even if the needed-by date
+# is later (or missing).
+MAX_REQUEST_AGE = timedelta(days=7)
 
 MIN_INTERVAL_SECONDS = 5
 
@@ -72,12 +80,14 @@ def ph_today(now: Optional[datetime] = None) -> date:
     return (now or datetime.now(timezone.utc)).astimezone(PH_TZ).date()
 
 
+def _aware(value: datetime) -> datetime:
+    # Firestore timestamps arrive timezone-aware (UTC); treat naive as UTC.
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
 def _to_ph_date(value: Any) -> Optional[date]:
     if isinstance(value, datetime):
-        # Firestore timestamps arrive timezone-aware (UTC); treat naive as UTC.
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(PH_TZ).date()
+        return _aware(value).astimezone(PH_TZ).date()
     if isinstance(value, date):
         return value
     if isinstance(value, str) and value.strip():
@@ -86,6 +96,19 @@ def _to_ph_date(value: Any) -> Optional[date]:
             if len(text) == 10:  # YYYY-MM-DD: already a calendar date
                 return date.fromisoformat(text)
             return _to_ph_date(datetime.fromisoformat(text))
+        except ValueError:
+            return None
+    return None
+
+
+def created_at(request: dict) -> Optional[datetime]:
+    """When the request was created (timezone-aware), or None if unknown."""
+    value = request.get("createdAt")
+    if isinstance(value, datetime):
+        return _aware(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return _aware(datetime.fromisoformat(value.strip()))
         except ValueError:
             return None
     return None
@@ -100,22 +123,34 @@ def needed_by_date(request: dict) -> Optional[date]:
     return None
 
 
-def is_overdue(request: Optional[dict], today: date) -> bool:
-    """True when `request` is open to donors and its needed-by date has passed."""
+def expiry_reason(request: Optional[dict], now: datetime) -> Optional[str]:
+    """Why an open `request` should expire at `now`: "needed_by", "max_age",
+    or None if it is not open or not overdue."""
     if not request:
-        return False
+        return None
     status = str(request.get("status") or "").strip().lower()
     if status not in EXPIRABLE_STATUSES:
-        return False
+        return None
     needed_by = needed_by_date(request)
-    return needed_by is not None and needed_by < today
+    if needed_by is not None and needed_by < ph_today(now):
+        return "needed_by"
+    created = created_at(request)
+    if created is not None and _aware(now) >= created + MAX_REQUEST_AGE:
+        return "max_age"
+    return None
+
+
+def is_overdue(request: Optional[dict], now: datetime) -> bool:
+    """True when `request` is open to donors and past its needed-by date or
+    MAX_REQUEST_AGE old, whichever comes first."""
+    return expiry_reason(request, now) is not None
 
 
 def expiration_updates(
-    request: Optional[dict], summary_exists: bool, today: date, timestamp: Any
+    request: Optional[dict], summary_exists: bool, now: datetime, timestamp: Any
 ) -> Optional[tuple[dict, Optional[dict]]]:
     """(request update, summary update or None), or None to leave it alone."""
-    if not is_overdue(request, today):
+    if not is_overdue(request, now):
         return None
     request_update = {
         "status": RequestStatus.EXPIRED,
@@ -134,13 +169,13 @@ def expiration_updates(
 
 
 @firestore.transactional
-def _expire_in_transaction(transaction, request_ref, summary_ref, today: date) -> bool:
+def _expire_in_transaction(transaction, request_ref, summary_ref, now: datetime) -> bool:
     request = request_ref.get(transaction=transaction)
     summary = summary_ref.get(transaction=transaction)
     updates = expiration_updates(
         request.to_dict() if request.exists else None,
         summary.exists,
-        today,
+        now,
         firestore.SERVER_TIMESTAMP,
     )
     if updates is None:
@@ -201,7 +236,7 @@ class RequestExpirer:
 
     def run_once(self) -> list[str]:
         """Expire every overdue open request; returns the expired request ids."""
-        today = ph_today(self._clock())
+        now = self._clock()
         candidates = (
             self._db.collection(REQUESTS)
             .where(filter=FieldFilter("status", "in", list(EXPIRABLE_STATUSES)))
@@ -210,11 +245,13 @@ class RequestExpirer:
 
         expired = []
         for snapshot in candidates:
-            if not is_overdue(snapshot.to_dict(), today):
+            reason = expiry_reason(snapshot.to_dict(), now)
+            if reason is None:
                 continue
             try:
-                if self._expire(snapshot.id, today):
+                if self._expire(snapshot.id, now):
                     expired.append(snapshot.id)
+                    log.info("Expired blood request %s (%s)", snapshot.id, reason)
             except Exception:
                 self._stats["errors"] += 1
                 log.exception("Could not expire blood request %s", snapshot.id)
@@ -222,14 +259,12 @@ class RequestExpirer:
         self._stats["runs"] += 1
         self._stats["expired"] += len(expired)
         self._last_run = self._clock()
-        if expired:
-            log.info("Expired %d blood request(s): %s", len(expired), ", ".join(expired))
         return expired
 
-    def _expire(self, request_id: str, today: date) -> bool:
+    def _expire(self, request_id: str, now: datetime) -> bool:
         return _expire_in_transaction(
             self._db.transaction(),
             self._db.collection(REQUESTS).document(request_id),
             self._db.collection(SUMMARIES).document(request_id),
-            today,
+            now,
         )
