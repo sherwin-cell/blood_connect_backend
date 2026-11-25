@@ -1,0 +1,33 @@
+# Runs the unit tests on every push and pull request. Uses no secrets: the
+# tests use fakes instead of Firebase. Tests that need the downloaded face
+# models (scripts/download_face_models.py) or the blood_connect repository
+# next to this one skip themselves when those are absent.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - run: python -m pip install -r requirements.txt
+
+      - run: python -m unittest discover -s tests -v
