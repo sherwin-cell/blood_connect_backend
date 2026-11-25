@@ -6,7 +6,8 @@ mobile app's rules:
 - Blood type: exact match (BloodCompatibility in the app). Requests must name
   a specific type; legacy "Any Type" requests match no one.
 - Eligibility: approved donor, isDonor, PRC marked isAvailableForDonation,
-  and today is on or after nextEligibleDonationDate (YYYY-MM-DD, PH time).
+  and today is on or after a valid nextEligibleDonationDate (YYYY-MM-DD,
+  PH time). A missing or invalid date is not eligible (fails closed).
 - Location: the donor's profile (users/{uid}) must be in the requester's
   municipality; when the requester has no municipality, their province.
   Requests from users with no location are not broadcast.
@@ -67,10 +68,13 @@ def blood_type_matches(request_type, donor_type) -> bool:
 
 
 def next_eligible_date(donor: dict) -> Optional[date]:
+    """nextEligibleDonationDate as a date, or None unless it is a real
+    YYYY-MM-DD string (no surrounding spaces; 2026-02-31 is rejected), the
+    same check as firestore.rules and DonorEligibility in the app."""
     raw = donor.get("nextEligibleDonationDate")
     if not isinstance(raw, str):
         return None
-    match = _DATE.match(raw.strip())
+    match = _DATE.fullmatch(raw)
     if not match:
         return None
     try:
@@ -80,6 +84,13 @@ def next_eligible_date(donor: dict) -> Optional[date]:
 
 
 def is_donor_eligible(donor: dict, today: date) -> bool:
+    """Whether the donor may be alerted to (and offer on) a request today.
+
+    Fails closed like isEligibleDonor() in firestore.rules: a donor without a
+    valid nextEligibleDonationDate is not eligible, so they are never told
+    about a request their offer would be refused for. [today] is the
+    Philippine date (the worker passes datetime.now(PH_TZ).date()).
+    """
     if str(donor.get("donorStatus") or "").strip().lower() != DonorStatus.APPROVED:
         return False
     if donor.get("isDonor") is not True:
@@ -87,7 +98,7 @@ def is_donor_eligible(donor: dict, today: date) -> bool:
     if donor.get("isAvailableForDonation") is not True:
         return False
     next_date = next_eligible_date(donor)
-    return next_date is None or today >= next_date
+    return next_date is not None and today >= next_date
 
 
 def location_matches(request: Location, donor: Location) -> bool:

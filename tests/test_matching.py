@@ -20,6 +20,8 @@ ELIGIBLE = {
     "isDonor": True,
     "isAvailableForDonation": True,
     "bloodType": "O+",
+    # Activated donors always carry the date PRC set at activation.
+    "nextEligibleDonationDate": "2026-01-15",
 }
 
 
@@ -63,10 +65,46 @@ class Eligibility(unittest.TestCase):
         self.assertTrue(
             is_donor_eligible({**ELIGIBLE, "nextEligibleDonationDate": "2026-11-23"}, TODAY)
         )
-        # Unparseable dates are ignored rather than blocking the donor.
-        self.assertTrue(
-            is_donor_eligible({**ELIGIBLE, "nextEligibleDonationDate": "12/01/2026"}, TODAY)
+
+    def test_fails_closed_without_a_valid_next_eligible_date(self):
+        missing = {k: v for k, v in ELIGIBLE.items() if k != "nextEligibleDonationDate"}
+        cases = {
+            "missing": missing,
+            "null": {**ELIGIBLE, "nextEligibleDonationDate": None},
+            "empty": {**ELIGIBLE, "nextEligibleDonationDate": ""},
+            "slashes": {**ELIGIBLE, "nextEligibleDonationDate": "12/01/2026"},
+            "single-digit month": {**ELIGIBLE, "nextEligibleDonationDate": "2026-1-15"},
+            "leading space": {**ELIGIBLE, "nextEligibleDonationDate": " 2026-01-15"},
+            "trailing newline": {**ELIGIBLE, "nextEligibleDonationDate": "2026-01-15\n"},
+            "month 13": {**ELIGIBLE, "nextEligibleDonationDate": "2026-13-01"},
+            "impossible Feb 31": {**ELIGIBLE, "nextEligibleDonationDate": "2026-02-31"},
+            "number": {**ELIGIBLE, "nextEligibleDonationDate": 20260115},
+            "date object": {**ELIGIBLE, "nextEligibleDonationDate": date(2026, 1, 15)},
+        }
+        for label, donor in cases.items():
+            with self.subTest(label):
+                self.assertFalse(is_donor_eligible(donor, TODAY))
+
+    def test_missing_date_donor_is_not_alerted(self):
+        missing = {k: v for k, v in ELIGIBLE.items() if k != "nextEligibleDonationDate"}
+        candidates = [
+            candidate("dated"),
+            DonorCandidate(
+                donor_id="undated",
+                user_id="undated",
+                donor=missing,
+                location=Location(municipality="sorsogon city", province="sorsogon"),
+            ),
+        ]
+        selected = select_donors(
+            request={"bloodType": "O+"},
+            requester_id="requester",
+            requester_location=Location("sorsogon city", "sorsogon"),
+            candidates=candidates,
+            today=TODAY,
+            limit=10,
         )
+        self.assertEqual([c.donor_id for c in selected], ["dated"])
 
 
 class Locations(unittest.TestCase):
