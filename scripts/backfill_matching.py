@@ -2,9 +2,12 @@
 
 1. request_summaries without hospitalName get it from their blood request
    (summaries published before the admin portal started copying it).
-2. Offers PRC already confirmed get their requester-donor chat
-   (chats/match_{requestId}_{offerId}); new confirmations get one from the
-   notification worker.
+2. Offers PRC already confirmed get an anonymised donor code (DNR-0001...),
+   also listed on the request's matchedDonorCodes so PRC can look it up.
+   New confirmations get one from the admin portal.
+
+Requester-donor chats are no longer created: requesters see only the donor
+code and PRC coordinates every donation.
 
 Dry run by default; pass --apply to write.
 
@@ -23,10 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import firebase_admin  # noqa: E402
 from firebase_admin import credentials, firestore  # noqa: E402
 
-from notifications.constants import OfferStatus  # noqa: E402
-from notifications.match_chat import ensure_match_chat, match_chat_id  # noqa: E402
-
-CONFIRMED = (OfferStatus.APPROVED, OfferStatus.LEGACY_ACCEPTED, OfferStatus.DONATED)
+from notifications.donor_code import CONFIRMED, assign_donor_code  # noqa: E402
 
 
 def main() -> int:
@@ -52,30 +52,26 @@ def main() -> int:
         if args.apply:
             summary.reference.update({"hospitalName": hospital})
 
-    chats = 0
+    # Oldest confirmations first, so codes follow the order PRC confirmed.
+    pending = []
     for offer in db.collection_group("offers").stream():
         data = offer.to_dict() or {}
-        if str(data.get("status", "")).lower() not in CONFIRMED:
+        if data.get("donorCode") or str(data.get("status", "")).lower() not in CONFIRMED:
             continue
-        request_ref = offer.reference.parent.parent
-        chat_id = match_chat_id(request_ref.id, offer.id)
-        if db.collection("chats").document(chat_id).get().exists:
-            continue
-        request = request_ref.get()
-        request_data = (request.to_dict() or {}) if request.exists else {}
-        requester_id = request_data.get("requesterId") or request_data.get("userId")
-        profile = db.collection("users").document(requester_id).get() if requester_id else None
-        requester_name = ((profile.to_dict() or {}).get("fullName")
-                          if profile is not None and profile.exists else None) or "Requester"
-        chats += 1
-        print(f"chat {chat_id}: {requester_id} <-> {data.get('donorId')}")
+        stamp = data.get("approvedAt") or data.get("updatedAt") or data.get("createdAt")
+        pending.append((stamp.timestamp() if hasattr(stamp, "timestamp") else 0.0, offer))
+    pending.sort(key=lambda item: item[0])
+
+    for _, offer in pending:
+        request_id = offer.reference.parent.parent.id
         if args.apply:
-            ensure_match_chat(db, request_ref.id, offer.id, requester_id, data.get("donorId"),
-                              requester_name, str(data.get("donorName") or "Donor"))
+            code = assign_donor_code(db, request_id, offer.id)
+            print(f"offer {request_id}/{offer.id}: donorCode = {code}")
+        else:
+            print(f"offer {request_id}/{offer.id}: needs a donor code")
 
     verb = "Updated" if args.apply else "Would update"
-    print(f"{verb} {summaries} summary(ies) and {'created' if args.apply else 'create'} "
-          f"{chats} chat(s).")
+    print(f"{verb} {summaries} summary(ies) and {len(pending)} confirmed offer(s).")
     return 0
 
 

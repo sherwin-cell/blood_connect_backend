@@ -147,8 +147,10 @@ def offer_received(offer: dict) -> tuple[str, str]:
 
 
 def offer_confirmed_for_requester(offer: dict) -> tuple[str, str]:
-    name = str(offer.get("donorName") or "A donor").strip()
-    return ("Donor confirmed", f"PRC confirmed {name} as a donor for your request.")
+    # Never the donor's name: requesters only see the anonymised code.
+    code = str(offer.get("donorCode") or "").strip()
+    donor = f"donor {code}" if code else "a donor"
+    return ("Donor confirmed", f"PRC confirmed {donor} for your request.")
 
 
 def offer_approved(offer: dict) -> tuple[str, str]:

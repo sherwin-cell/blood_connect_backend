@@ -40,13 +40,16 @@ from .constants import (
     Route,
 )
 from .delivery import Delivery, send_announcement
-from .match_chat import ensure_match_chat
+from .donor_code import assign_donor_code
 from .events import Intent, Kind
 from .matching import DonorCandidate, Location, blood_type_matches, is_donor_eligible, select_donors
 from .outbox import COLLECTION as NOTIFICATIONS, PUSH_PENDING, Outbox
 from prc_stock.model import covered_by_prc_stock
 
 log = logging.getLogger(__name__)
+
+# chats/{id}.type of the retired requester-donor chats (match_{req}_{offer}).
+DONOR_MATCH_CHAT = "donor_match"
 
 STATE_COLLECTION = "notification_worker"
 STATE_DOC = "state"
@@ -518,28 +521,23 @@ class NotificationWorker:
                      requestId=intent.ids["requestId"], offerId=intent.ids["offerId"])
 
     def _offer_approved(self, intent: Intent) -> None:
-        ids = {"requestId": intent.ids["requestId"], "offerId": intent.ids["offerId"]}
-        self._notify(intent.data.get("donorId"), T.OFFER_APPROVED, intent,
-                     content.offer_approved(intent.data), Route.MY_OFFERS, **ids)
-        self._notify(self._offer_requester_id(intent), T.OFFER_CONFIRMED_FOR_REQUESTER, intent,
-                     content.offer_confirmed_for_requester(intent.data), Route.REQUEST_OFFERS, **ids)
-        self._open_match_chat(intent)
+        """PRC confirmed this donor.
 
-    def _open_match_chat(self, intent: Intent) -> None:
-        """PRC confirmed this donor: let requester and donor chat."""
-        request_id, offer_id = intent.ids["requestId"], intent.ids["offerId"]
-        requester_id = self._offer_requester_id(intent)
-        requester_name = "Requester"
-        if requester_id:
-            profile = self._db.collection("users").document(requester_id).get()
-            if profile.exists:
-                requester_name = str((profile.to_dict() or {}).get("fullName") or requester_name)
-        try:
-            ensure_match_chat(self._db, request_id, offer_id, requester_id,
-                              intent.data.get("donorId"), requester_name,
-                              str(intent.data.get("donorName") or "Donor"))
-        except Exception:
-            log.exception("Could not open match chat for %s/%s", request_id, offer_id)
+        Requester and donor stay anonymous to each other: no chat is opened
+        and the requester only learns the donor's DNR code. PRC coordinates.
+        """
+        ids = {"requestId": intent.ids["requestId"], "offerId": intent.ids["offerId"]}
+        offer = dict(intent.data)
+        if not offer.get("donorCode"):
+            try:
+                offer["donorCode"] = assign_donor_code(self._db, ids["requestId"], ids["offerId"])
+            except Exception:
+                log.exception("Could not assign a donor code to %s/%s",
+                              ids["requestId"], ids["offerId"])
+        self._notify(intent.data.get("donorId"), T.OFFER_APPROVED, intent,
+                     content.offer_approved(offer), Route.MY_OFFERS, **ids)
+        self._notify(self._offer_requester_id(intent), T.OFFER_CONFIRMED_FOR_REQUESTER, intent,
+                     content.offer_confirmed_for_requester(offer), Route.REQUEST_OFFERS, **ids)
 
     def _offer_rejected(self, intent: Intent) -> None:
         self._notify(intent.data.get("donorId"), T.OFFER_REJECTED, intent,
@@ -572,6 +570,10 @@ class NotificationWorker:
         if not chat_snapshot.exists:
             return
         chat = chat_snapshot.to_dict() or {}
+        # Retired requester-donor chats: firestore.rules block new messages;
+        # never notify about one written by an admin tool either.
+        if chat.get("type") == DONOR_MATCH_CHAT:
+            return
         sender_id = str(intent.data.get("senderId") or "")
         sender_name = self._sender_name(sender_id, chat) if sender_id else "New message"
         # In a PRC support chat, staff replies appear as "PRC Support".
